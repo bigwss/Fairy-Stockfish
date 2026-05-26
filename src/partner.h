@@ -25,23 +25,19 @@
 #include "misc.h"
 #include "position.h"
 
-namespace Stockfish {
+namespace Stockfish
+{
 
 /// PartnerHandler manages the communication with the partner
 /// in games played on two boards, such as bughouse.
 
-enum PartnerType {
-  HUMAN,
-  FAIRY,
-  ALL_PARTNERS
-};
+enum PartnerType { HUMAN, FAIRY, ALL_PARTNERS };
 
 struct PartnerHandler {
     void reset();
-    template <PartnerType p = ALL_PARTNERS>
-    void ptell(const std::string& message);
-    void parse_partner(std::istringstream& is);
-    void parse_ptell(std::istringstream& is, const Position& pos);
+    template <PartnerType p = ALL_PARTNERS> void ptell(const std::string &message);
+    void parse_partner(std::istringstream &is);
+    void parse_ptell(std::istringstream &is, const Position &pos);
 
     std::atomic<bool> isFairy;
     std::atomic<bool> fast, sitRequested, partnerDead, weDead, weWin, weVirtualWin, weVirtualLoss;
@@ -51,6 +47,6 @@ struct PartnerHandler {
 
 extern PartnerHandler Partner;
 
-} // namespace Stockfish
+}  // namespace Stockfish
 
-#endif // #ifndef PARTNER_H_INCLUDED
+#endif  // #ifndef PARTNER_H_INCLUDED

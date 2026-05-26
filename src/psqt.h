@@ -16,10 +16,8 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 #ifndef PSQT_H_INCLUDED
 #define PSQT_H_INCLUDED
-
 
 #include "types.h"
 
@@ -31,9 +29,8 @@ namespace Stockfish::PSQT
 extern Score psq[PIECE_NB][SQUARE_NB + 1];
 
 // Fill psqt array from a set of internally linked parameters
-extern void init(const Variant*);
+extern void init(const Variant *);
 
-} // namespace Stockfish::PSQT
+}  // namespace Stockfish::PSQT
 
-
-#endif // PSQT_H_INCLUDED
+#endif  // PSQT_H_INCLUDED

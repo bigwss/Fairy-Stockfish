@@ -28,3 +28,7 @@ pyffish.egg-info
 # IDEs
 .vscode
 .idea
+
+# BUILD
+**/build*
+**/log*

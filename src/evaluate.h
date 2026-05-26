@@ -26,42 +26,45 @@
 
 #include "variant.h"
 
-namespace Stockfish {
+namespace Stockfish
+{
 
 class Position;
 
-namespace Eval {
+namespace Eval
+{
 
-  std::string trace(Position& pos);
-  Value evaluate(const Position& pos);
+std::string trace(Position &pos);
+Value evaluate(const Position &pos);
 
-  extern bool useNNUE;
-  extern std::string eval_file_loaded;
+extern bool useNNUE;
+extern std::string eval_file_loaded;
 
-  // The default net name MUST follow the format nn-[SHA256 first 12 digits].nnue
-  // for the build process (profile-build and fishtest) to work. Do not change the
-  // name of the macro, as it is used in the Makefile.
-  #define EvalFileDefaultName   "xiangqi-83f16c17fe26.nnue"
-  #define EvalFile2DefaultName  "janggi-85de3dae670a.nnue"
+// The default net name MUST follow the format nn-[SHA256 first 12 digits].nnue
+// for the build process (profile-build and fishtest) to work. Do not change the
+// name of the macro, as it is used in the Makefile.
+#define EvalFileDefaultName "xiangqi-83f16c17fe26.nnue"
+#define EvalFile2DefaultName "janggi-85de3dae670a.nnue"
 
-  namespace NNUE {
+namespace NNUE
+{
 
-    std::string trace(Position& pos);
-    Value evaluate(const Position& pos, bool adjusted = false);
+std::string trace(Position &pos);
+Value evaluate(const Position &pos, bool adjusted = false);
 
-    void init();
-    void verify();
+void init();
+void verify();
 
-    bool load_eval(std::string name, std::istream& stream);
-    bool save_eval(std::ostream& stream);
-    bool save_eval(const std::optional<std::string>& filename);
+bool load_eval(std::string name, std::istream &stream);
+bool save_eval(std::ostream &stream);
+bool save_eval(const std::optional<std::string> &filename);
 
-  } // namespace NNUE
+}  // namespace NNUE
 
-} // namespace Eval
+}  // namespace Eval
 
-extern const Variant* currentNnueVariant;
+extern const Variant *currentNnueVariant;
 
-} // namespace Stockfish
+}  // namespace Stockfish
 
-#endif // #ifndef EVALUATE_H_INCLUDED
+#endif  // #ifndef EVALUATE_H_INCLUDED

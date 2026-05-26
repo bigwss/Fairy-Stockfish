@@ -16,7 +16,6 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 #include "psqt.h"
 
 #include <algorithm>
@@ -30,12 +29,12 @@
 #include "variant.h"
 #include "misc.h"
 
-
-namespace Stockfish {
+namespace Stockfish
+{
 
 Value EvalPieceValue[PHASE_NB][PIECE_NB];
 Value CapturePieceValue[PHASE_NB][PIECE_NB];
-
+// clang-format off
 Value PieceValue[PHASE_NB][PIECE_NB] = {
   {
     VALUE_ZERO, PawnValueMg, KnightValueMg, BishopValueMg, RookValueMg, QueenValueMg, FersValueMg, AlfilValueMg,
@@ -76,13 +75,13 @@ Value PieceValue[PHASE_NB][PIECE_NB] = {
     VALUE_ZERO, VALUE_ZERO, VALUE_ZERO, VALUE_ZERO, VALUE_ZERO, VALUE_ZERO, VALUE_ZERO, VALUE_ZERO,
   },
 };
-
+// clang-format on
 
 namespace
 {
 
 auto constexpr S = make_score;
-
+// clang-format off
 // 'Bonus' contains Piece-Square parameters.
 // Scores are explicit for files A to D, implicitly mirrored for E to H.
 constexpr Score Bonus[PIECE_TYPE_NB][RANK_NB][int(FILE_NB) / 2] = {
@@ -151,7 +150,7 @@ constexpr Score PBonus[RANK_NB][FILE_NB] =
    { S(  3, 27), S(-11, 18), S( -6, 19), S( 22, 29), S( -8, 30), S( -5,  9), S(-14,  8), S(-11, 14) },
    { S( -7, -1), S(  6,-14), S( -2, 13), S(-11, 22), S(  4, 24), S(-14, 17), S( 10,  7), S( -9,  7) }
   };
-
+// clang-format om
 // Estimate piece value
 Value piece_value(Phase phase, PieceType pt)
 {
