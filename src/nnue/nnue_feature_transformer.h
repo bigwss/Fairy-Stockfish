@@ -245,8 +245,8 @@ public:
                 HalfDimensions * actualInputDimensions * sizeof(WeightType);
             const size_t psqtWeightsSize =
                 actualInputDimensions * PSQTBuckets * sizeof(PSQTWeightType);
-            const size_t totalSize = biasesSize + weightsSize + psqtWeightsSize;
 #if false
+            const size_t totalSize = biasesSize + weightsSize + psqtWeightsSize;
             std::cout << "FeatureTransformer memory allocation:" << std::endl;
             std::cout << "  actualInputDimensions: " << actualInputDimensions << std::endl;
             std::cout << "  HalfDimensions: " << HalfDimensions << std::endl;

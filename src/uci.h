@@ -89,11 +89,13 @@ private:
 void init(OptionsMap &);
 void loop(int argc, char *argv[]);
 std::string value(Value v);
+double value_cp(Value v);
 std::string square(const Position &pos, Square s);
 std::string dropped_piece(const Position &pos, Move m);
 std::string move(const Position &pos, Move m);
 std::string pv(const Position &pos, Depth depth, Value alpha, Value beta);
 std::string wdl(Value v, int ply);
+void wdl(Value v, int ply, std::tuple<int, int, int> &wv);
 Move to_move(const Position &pos, std::string &str);
 
 }  // namespace UCI

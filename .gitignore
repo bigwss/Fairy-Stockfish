@@ -32,3 +32,4 @@ pyffish.egg-info
 # BUILD
 **/build*
 **/log*
+default.profraw

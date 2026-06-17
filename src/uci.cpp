@@ -33,6 +33,7 @@
 #include "uci.h"
 #include "xboard.h"
 #include "syzygy/tbprobe.h"
+#include "nlohmann/json.hpp"
 
 using namespace std;
 
@@ -43,6 +44,40 @@ extern vector<string> setup_bench(const Position &, istream &);
 
 namespace
 {
+
+struct MoveRecord {
+    int human_index = 0;            // 第几个人类走子(1-based)
+    int ply_index = 0;              // 全局半回合序号
+    std::string fen_before;         // 人类落子前 FEN
+    std::string move;               // 人类实走(UCI)
+    std::string best_move;          // 引擎推理的最佳走法(UCI)
+    std::optional<double> best_cp;  // 裁判填:最佳分(人类视角)
+    std::optional<double> best_win_rate;
+    std::optional<double> played_cp;        // 裁判填:实走分(人类视角)
+    std::optional<double> played_win_rate;  // 裁判填:实走分(人类视角)
+    std::optional<double> loss;             // 裁判填:胜率损失
+};
+
+static nlohmann::json move_record_to_json(const MoveRecord &r)
+{
+    nlohmann::json j;
+    j["human_index"] = r.human_index;
+    j["ply_index"] = r.ply_index;
+    j["fen_before"] = r.fen_before;
+    j["move"] = r.move;
+    j["best_move"] = r.best_move;
+    if (r.best_cp)
+        j["best_cp"] = *r.best_cp;
+    if (r.played_cp)
+        j["played_cp"] = *r.played_cp;
+    if (r.loss)
+        j["loss"] = *r.loss;
+    if (r.best_win_rate)
+        j["best_win_rate"] = *r.best_win_rate;
+    if (r.played_win_rate)
+        j["played_win_rate"] = *r.played_win_rate;
+    return j;
+}
 
 // position() is called when engine receives the "position" UCI command.
 // The function sets up the position described in the given FEN string ("fen")
@@ -132,7 +167,6 @@ void setoption(istringstream &is)
 void go(Position &pos, istringstream &is, StateListPtr &states,
         const std::vector<Move> &banmoves = {})
 {
-
     Search::LimitsType limits;
     string token;
     bool ponderMode = false;
@@ -190,6 +224,151 @@ void go(Position &pos, istringstream &is, StateListPtr &states,
         }
 
     Threads.start_thinking(pos, states, limits, ponderMode);
+}
+
+/**
+ * @brief
+ * @note 评估人走棋的胜率损失，使用AI的最优走法作为最优走法，计算最优走法和is中人的实际走法胜率差
+ * @param  is: move record
+ * example: rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w moves b2e2 b9c7 c3c4
+ * a9b9 g3g4 b7a7 b0c2 g6g5 g4g5 b9b5 g5g6 g9e7 h2f2 h9f8
+ * @param  human_play_red true 人走的红方 false： 人走的黑方
+ * @retval None
+ */
+void estimate(std::istringstream &is, bool human_play_red)
+{
+    // 将分析结果保存在这个records中
+    std::vector<MoveRecord> records;
+
+    Search::clear();
+    Position pos;
+    StateListPtr states(new std::deque<StateInfo>(1));
+    assert(variants.find(Options["UCI_Variant"])->second != nullptr);
+    pos.set(variants.find(Options["UCI_Variant"])->second,
+            variants.find(Options["UCI_Variant"])->second->startFen, false, &states->back(),
+            Threads.main());
+    std::string token("ucci");
+    Options["Protocol"].set_default(token);
+    string defaultVariant = string(
+#ifdef LARGEBOARDS
+        token == "usi"    ? "shogi"
+        : token == "ucci" ? "xiangqi"
+#else
+        token == "usi"    ? "minishogi"
+        : token == "ucci" ? "minixiangqi"
+#endif
+                          : "chess");
+    Options["UCI_Variant"].set_default(defaultVariant);
+    std::istringstream ss("UCI_ShowWDL true");
+    setoption(ss);
+    ss.clear();
+    ss = std::istringstream("EvalFile xiangqi-c07e94a5c7cb.nnue");
+    setoption(ss);
+
+    std::deque<std::string> moves;
+    std::string fen;
+
+    while (is >> token) {
+        std::cout << "token: " << token << std::endl;
+        if (token == "moves") {
+            while (is >> token) {
+                moves.push_back(token);
+            }
+        } else {
+            fen += token + " ";
+        }
+    }
+
+    bool first_red = true;
+    // 根据fen知道谁先走
+    auto iter = fen.find('w');
+    if (iter == std::string::npos) {
+        first_red = false;
+    }
+    std::cout << "fen: " << fen << "first " << (first_red ? "red" : "black") << std::endl;
+
+    int start_pos = (human_play_red == first_red ? 0 : 1);
+
+    for (std::size_t index = start_pos; index < moves.size(); index += 2) {
+        states = StateListPtr(new std::deque<StateInfo>(1));
+        pos.set(variants.find(Options["UCI_Variant"])->second, fen, Options["UCI_Chess960"],
+                &states->back(), Threads.main(), false);
+        std::size_t i = 0;
+        for (; i < index; ++i) {
+            states->emplace_back();
+            pos.do_move(UCI::to_move(pos, moves[i]), states->back());
+        }
+        // 这里应该判断下是否moves已经消耗完了，break出去
+        if (i >= moves.size())
+            break;
+        sync_cout << pos << sync_endl;
+        std::istringstream gois("go depth 14");
+        // 最优走法
+        go(pos, gois, states);
+        Threads.main()->wait_for_search_finished();
+        auto bestThread = Threads.get_best_thread();
+        std::string best_move = UCI::move(pos, bestThread->rootMoves[0].pv[0]);
+        Value v = bestThread->rootMoves[0].score;
+        std::tuple<int, int, int> wv;
+        UCI::wdl(v, pos.game_ply(), wv);
+        const int bestWin = std::get<0>(wv);
+        const double bestCp = UCI::value_cp(v);
+
+        double playedCp(bestCp);
+        int playedWin(bestWin);
+        // 走法不是最优
+        if (best_move != moves[index]) {
+            // go depth 10 searchmoves xx 设置实际走法
+            std::string playedCmd = "go depth 14 searchmoves " + moves[index];
+            std::istringstream playedIs(playedCmd);
+            go(pos, playedIs, states);
+            Threads.main()->wait_for_search_finished();
+            bestThread = Threads.get_best_thread();
+            Value playedValue = bestThread->rootMoves[0].score;
+            std::tuple<int, int, int> playedWv;
+            UCI::wdl(playedValue, pos.game_ply(), playedWv);
+            playedWin = std::get<0>(playedWv);
+            playedCp = UCI::value_cp(playedValue);
+        }
+
+        MoveRecord rec;
+        rec.human_index = int((index - start_pos) / 2 + 1);
+        rec.ply_index = int(index + 1);
+        rec.fen_before = pos.fen();
+        rec.move = moves[index];
+        rec.best_move = best_move;
+        rec.best_cp = bestCp;
+        rec.played_cp = playedCp;
+        rec.loss = (bestWin - playedWin) / 10.0;
+        rec.best_win_rate = bestWin / 10.0;
+        rec.played_win_rate = playedWin / 10.0;
+        // 再次推理由于缓存的存在，可能推导出更优的走法或者导致结果变化，如果推理出用户走法更优，需要保存loss>=0;
+        if (rec.loss < 0) {
+            rec.loss = 0.0;
+        }
+
+        records.push_back(rec);
+    }
+
+    nlohmann::json recs = nlohmann::json::array();
+    for (const auto &r : records)
+        recs.push_back(move_record_to_json(r));
+    nlohmann::json j;
+    j["records"] = std::move(recs);
+    sync_cout << "estimateresult " << j.dump() << sync_endl;
+#if 0
+    for (const auto &rec : records) {
+        std::cout << "estimate human " << rec.human_index << " ply " << rec.ply_index << " fen "
+                  << rec.fen_before << " move " << rec.move << " best move: " << rec.best_move;
+        if (rec.best_cp.has_value())
+            std::cout << " best_cp " << *rec.best_cp;
+        if (rec.played_cp.has_value())
+            std::cout << " played_cp " << *rec.played_cp;
+        if (rec.loss.has_value())
+            std::cout << " loss " << *rec.loss;
+        std::cout << std::endl;
+    }
+#endif
 }
 
 void multipv(Position &pos, istringstream &is, StateListPtr &states,
@@ -399,7 +578,20 @@ void UCI::loop(int argc, char *argv[])
             go(pos, is, states, banmoves);
         else if (token == "multipv")
             multipv(pos, is, states, banmoves);
-        else if (token == "position")
+        else if (token == "estimate") {
+            bool humanRed = true;
+            std::streampos posBeforeColor = is.tellg();
+            std::string colorToken;
+            if (is >> colorToken) {
+                if (colorToken == "red")
+                    humanRed = true;
+                else if (colorToken == "black")
+                    humanRed = false;
+                else
+                    is.seekg(posBeforeColor);
+            }
+            estimate(is, humanRed);
+        } else if (token == "position")
             position(pos, is, states), banmoves.clear();
         else if (token == "ucinewgame" || token == "usinewgame" || token == "uccinewgame")
             Search::clear();
@@ -480,6 +672,28 @@ string UCI::value(Value v)
     return ss.str();
 }
 
+double UCI::value_cp(Value v)
+{
+    assert(-VALUE_INFINITE < v && v < VALUE_INFINITE);
+    double cp(0);
+    if (Options["Protocol"] == "xboard") {
+        if (abs(v) < VALUE_MATE_IN_MAX_PLY)
+            cp = v * 100 / PawnValueEg;
+        else
+            cp = (v > 0 ? XBOARD_VALUE_MATE + VALUE_MATE - v + 1
+                        : -XBOARD_VALUE_MATE - VALUE_MATE - v - 1) /
+                 2;
+    } else if (abs(v) < VALUE_MATE_IN_MAX_PLY)
+        cp = v * 100 / PawnValueEg;
+    else if (Options["Protocol"] == "usi")
+        // In USI, mate distance is given in ply
+        cp = (v > 0 ? VALUE_MATE - v : -VALUE_MATE - v);
+    else
+        cp = (v > 0 ? VALUE_MATE - v + 1 : -VALUE_MATE - v - 1) / 2;
+
+    return cp;
+}
+
 /// UCI::wdl() report WDL statistics given an evaluation and a game ply, based on
 /// data gathered for fishtest LTC games.
 
@@ -494,6 +708,19 @@ string UCI::wdl(Value v, int ply)
     ss << " wdl " << wdl_w << " " << wdl_d << " " << wdl_l;
 
     return ss.str();
+}
+
+void UCI::wdl(Value v, int ply, std::tuple<int, int, int> &wv)
+{
+
+    stringstream ss;
+
+    int wdl_w = win_rate_model(v, ply);
+    int wdl_l = win_rate_model(-v, ply);
+    int wdl_d = 1000 - wdl_w - wdl_l;
+    std::get<0>(wv) = wdl_w;
+    std::get<1>(wv) = wdl_d;
+    std::get<2>(wv) = wdl_l;
 }
 
 /// UCI::square() converts a Square to a string in algebraic notation (g1, a7, etc.)
