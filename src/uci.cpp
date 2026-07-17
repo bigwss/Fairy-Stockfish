@@ -16,6 +16,7 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include <cstdlib>
 #include <cassert>
 #include <cmath>
@@ -58,6 +59,111 @@ struct MoveRecord {
     std::optional<double> loss;             // 裁判填:胜率损失
 };
 
+struct MoveRecord2 {
+    int human_index = 0;            // 第几个人类走子(1-based)
+    int ply_index = 0;              // 全局半回合序号
+    std::string fen_before;         // 人类落子前 FEN
+    std::string move;               // 人类实走(UCI)
+    std::string best_move;          // 引擎推理的最佳走法(UCI)
+    std::optional<double> best_cp;  // 裁判填:最佳分(人类视角)
+    std::optional<double> best_win_rate;
+    std::optional<double> played_cp;        // 裁判填:实走分(人类视角)
+    std::optional<double> played_win_rate;  // 裁判填:实走分(人类视角)
+    std::optional<double> loss;             // 裁判填:胜率损失
+
+    // 强裁判在“人类/被测等级走子前局面”下搜索出的候选着法列表。
+    // 由 MultiPV 200 得到，按裁判分数从好到坏排序。每个元素包含：
+    //   rank: 候选排名，1 表示最佳着
+    //   move: 候选着法(UCI/ICCS 坐标)
+    //   cp: 候选分数，单位 centipawn，方向与当前走子方一致
+    //   win_rate: 候选胜率，单位百分比，例如 5.3 表示 5.3%
+    //   loss_from_best: 与最佳候选的胜率差，单位百分点
+    nlohmann::json oracle_candidates = nlohmann::json::array();
+
+    // oracle_candidates 中实际保存的候选数量。正常情况下等于当前局面的合法着数；
+    // 如果合法着数超过 MultiPV 上限，或引擎没有完整返回，这个值可用于发现截断。
+    int candidate_count = 0;
+
+    // 实走着法在 oracle_candidates 中的排名，1 表示最佳着。
+    // -1 表示未找到实走，一般说明输入走法异常或候选列表被截断。
+    int played_rank = -1;
+
+    // 比实走着法排名更靠前的候选数量。若 played_rank=1，则为 0。
+    // -1 表示实走未找到。
+    int num_better_moves = -1;
+
+    // 实走是否命中前 N 名候选。用于粗粒度描述“是否在强裁判可接受范围内”。
+    bool top1_hit = false;
+    bool top3_hit = false;
+    bool top5_hit = false;
+
+    // 实走在候选排序中的百分位，范围 [0,1]，越大越好。
+    // rank=1 时为 1；最后一名约为 0。实走未找到时不输出。
+    std::optional<double> played_score_percentile;
+
+    // 最佳着与第二佳着的 cp 差。值越大，说明第一选择越唯一；
+    // 这种局面通常比“很多着法都差不多”的局面更有区分度。
+    std::optional<double> best_second_cp_gap;
+
+    // 最佳着与候选 cp 中位数的差。值越大，说明普通着法和最佳着差距更大；
+    // 可作为局面“考点强度/候选分化程度”的一个摘要。
+    std::optional<double> best_median_cp_gap;
+
+    // 所有候选 cp 的标准差。值越大，说明候选着法质量分布越分散；
+    // 候选分布越分散，玩家/等级的选择越可能带来可观测差异。
+    std::optional<double> candidate_cp_std;
+
+    // 与最佳着 cp 差不超过 50/100 的候选数量，称为“安全着数量”。
+    // safe_count 越大，说明好走法很多；只看 loss 时这种局面容易把等级差异抹平。
+    int safe_count_50cp = 0;
+    int safe_count_100cp = 0;
+
+    // 与最佳着 cp 差至少 150/300 的候选数量，称为“坏着数量”。
+    // bad_count 越大，说明局面里可犯错空间更大。
+    int bad_count_150cp = 0;
+    int bad_count_300cp = 0;
+};
+
+static nlohmann::json move_record_to_json(const MoveRecord2 &r)
+{
+    nlohmann::json j;
+    j["human_index"] = r.human_index;
+    j["ply_index"] = r.ply_index;
+    j["fen_before"] = r.fen_before;
+    j["move"] = r.move;
+    j["best_move"] = r.best_move;
+    if (r.best_cp)
+        j["best_cp"] = *r.best_cp;
+    if (r.played_cp)
+        j["played_cp"] = *r.played_cp;
+    if (r.loss)
+        j["loss"] = *r.loss;
+    if (r.best_win_rate)
+        j["best_win_rate"] = *r.best_win_rate;
+    if (r.played_win_rate)
+        j["played_win_rate"] = *r.played_win_rate;
+    j["oracle_candidates"] = r.oracle_candidates;
+    j["candidate_count"] = r.candidate_count;
+    j["played_rank"] = r.played_rank;
+    j["num_better_moves"] = r.num_better_moves;
+    j["top1_hit"] = r.top1_hit;
+    j["top3_hit"] = r.top3_hit;
+    j["top5_hit"] = r.top5_hit;
+    if (r.played_score_percentile)
+        j["played_score_percentile"] = *r.played_score_percentile;
+    if (r.best_second_cp_gap)
+        j["best_second_cp_gap"] = *r.best_second_cp_gap;
+    if (r.best_median_cp_gap)
+        j["best_median_cp_gap"] = *r.best_median_cp_gap;
+    if (r.candidate_cp_std)
+        j["candidate_cp_std"] = *r.candidate_cp_std;
+    j["safe_count_50cp"] = r.safe_count_50cp;
+    j["safe_count_100cp"] = r.safe_count_100cp;
+    j["bad_count_150cp"] = r.bad_count_150cp;
+    j["bad_count_300cp"] = r.bad_count_300cp;
+    return j;
+}
+
 static nlohmann::json move_record_to_json(const MoveRecord &r)
 {
     nlohmann::json j;
@@ -77,6 +183,138 @@ static nlohmann::json move_record_to_json(const MoveRecord &r)
     if (r.played_win_rate)
         j["played_win_rate"] = *r.played_win_rate;
     return j;
+}
+
+// 计算一组 cp 分数的总体标准差。
+// 输入 xs: 同一局面下所有候选着法的 cp 分数，方向与当前走子方一致。
+// 返回值: cp 标准差。越大表示候选着法质量差异越大。
+static double cp_stddev(const std::vector<double> &xs)
+{
+    if (xs.empty())
+        return 0.0;
+
+    double sum = 0.0;
+    for (double x : xs)
+        sum += x;
+    const double mean = sum / xs.size();
+
+    double var = 0.0;
+    for (double x : xs) {
+        const double d = x - mean;
+        var += d * d;
+    }
+    return std::sqrt(var / xs.size());
+}
+
+// 将一个 RootMove 候选转为 JSON。
+// pos: 当前待分析局面，用于把内部 Move 转成 UCI/ICCS 字符串。
+// rm: 搜索得到的一条根候选。
+// rank: rm 在 root_moves 中的 1-based 排名。
+// best_win: 最佳候选的 win 值，单位是千分制。用于计算 loss_from_best。
+static nlohmann::json root_move_to_json(const Position &pos, const Search::RootMove &rm, int rank,
+                                        int best_win)
+{
+    nlohmann::json j;
+    const Value v = rm.score;
+    std::tuple<int, int, int> wv;
+    UCI::wdl(v, pos.game_ply(), wv);
+    const int win = std::get<0>(wv);
+
+    j["rank"] = rank;
+    j["move"] = rm.pv.empty() ? std::string() : UCI::move(pos, rm.pv[0]);
+    j["cp"] = UCI::value_cp(v);
+    j["win_rate"] = win / 10.0;
+    j["loss_from_best"] = std::max(0.0, (best_win - win) / 10.0);
+    return j;
+}
+
+// 从强裁判 MultiPV 结果中填充 MoveRecord2 的候选结构特征。
+//
+// rec:
+//   当前被测走子的记录。进入函数前需要已填好 rec.move，即被测方真实走法。
+// pos:
+//   被测方走子前的局面。所有 root_moves 的分数都以该局面走子方为视角。
+// root_moves:
+//   go depth N + MultiPV 后得到的根候选，Stockfish 已按分数从好到坏排序。
+//
+// 本函数做三类事情：
+//   1. 保存 oracle_candidates: 每个候选的 rank/move/cp/win_rate/loss_from_best。
+//   2. 找到 rec.move 的排名，填充 played_rank、topN_hit、num_better_moves。
+//   3. 计算候选集合摘要，如 best-second gap、best-median gap、cp 标准差、
+//      safe_count/bad_count，用来描述“这个局面有多能区分玩家选择”。
+static void fill_oracle_candidate_features(MoveRecord2 &rec, const Position &pos,
+                                           const Search::RootMoves &root_moves)
+{
+    rec.candidate_count = int(root_moves.size());
+    if (root_moves.empty())
+        return;
+
+    std::tuple<int, int, int> best_wv;
+    UCI::wdl(root_moves[0].score, pos.game_ply(), best_wv);
+    // best_win: 最佳候选的胜率，千分制整数。例如 53 表示 5.3%。
+    // best_cp: 最佳候选的 cp 分数，后续所有 safe/bad 阈值都相对它计算。
+    const int best_win = std::get<0>(best_wv);
+    const double best_cp = UCI::value_cp(root_moves[0].score);
+
+    // 保存所有候选 cp，用于计算候选分布的中位数和标准差。
+    std::vector<double> cps;
+    cps.reserve(root_moves.size());
+
+    for (std::size_t i = 0; i < root_moves.size(); ++i) {
+        const auto &rm = root_moves[i];
+        if (rm.pv.empty())
+            continue;
+
+        const int rank = int(i) + 1;
+        const std::string move = UCI::move(pos, rm.pv[0]);
+        const double cp = UCI::value_cp(rm.score);
+        cps.push_back(cp);
+
+        rec.oracle_candidates.push_back(root_move_to_json(pos, rm, rank, best_win));
+
+        // cp_loss: 当前候选相比最佳候选少多少 cp。
+        // 阈值都以 cp_loss 为准：safe 表示接近最佳，bad 表示明显差。
+        const double cp_loss = best_cp - cp;
+        if (cp_loss <= 50.0)
+            rec.safe_count_50cp++;
+        if (cp_loss <= 100.0)
+            rec.safe_count_100cp++;
+        if (cp_loss >= 150.0)
+            rec.bad_count_150cp++;
+        if (cp_loss >= 300.0)
+            rec.bad_count_300cp++;
+
+        if (move == rec.move && rec.played_rank < 0) {
+            rec.played_rank = rank;
+            rec.num_better_moves = rank - 1;
+            rec.top1_hit = rank == 1;
+            rec.top3_hit = rank <= 3;
+            rec.top5_hit = rank <= 5;
+            if (root_moves.size() == 1)
+                rec.played_score_percentile = 1.0;
+            else
+                // 百分位只依赖排序，不依赖 cp 尺度；越接近 1 表示越靠前。
+                rec.played_score_percentile =
+                    1.0 - double(rank - 1) / double(root_moves.size() - 1);
+        }
+    }
+
+    if (root_moves.size() >= 2)
+        // best-second gap: 最佳候选和第二候选的 cp 差，用来衡量最佳着是否唯一。
+        rec.best_second_cp_gap =
+            UCI::value_cp(root_moves[0].score) - UCI::value_cp(root_moves[1].score);
+
+    if (!cps.empty()) {
+        std::vector<double> sorted = cps;
+        std::sort(sorted.begin(), sorted.end());
+        // median 是候选集合的“普通着法”代表，best-median gap 越大说明局面越尖锐。
+        const double median =
+            sorted.size() % 2 == 1
+                ? sorted[sorted.size() / 2]
+                : (sorted[sorted.size() / 2 - 1] + sorted[sorted.size() / 2]) / 2.0;
+        rec.best_median_cp_gap = best_cp - median;
+        rec.candidate_cp_std = cp_stddev(cps);
+    }
 }
 
 // position() is called when engine receives the "position" UCI command.
@@ -371,6 +609,163 @@ void estimate(std::istringstream &is, bool human_play_red)
 #endif
 }
 
+void estimate2(std::istringstream &is, bool human_play_red)
+{
+    // 解析形如 "<FEN> moves <move1> <move2> ..." 的输入，逐回合评估人类一方的实走。
+    // 与 estimate() 不同：本函数通过一次 MultiPV 搜索同时获得最优着和实走的评分。
+    std::vector<MoveRecord2> records;
+
+    // 建立象棋变体的初始局面，并设置本次分析依赖的协议、变体和 NNUE 网络。
+    Search::clear();
+    Position pos;
+    StateListPtr states(new std::deque<StateInfo>(1));
+    assert(variants.find(Options["UCI_Variant"])->second != nullptr);
+    pos.set(variants.find(Options["UCI_Variant"])->second,
+            variants.find(Options["UCI_Variant"])->second->startFen, false, &states->back(),
+            Threads.main());
+    std::string token("ucci");
+    Options["Protocol"].set_default(token);
+    string defaultVariant = string(
+#ifdef LARGEBOARDS
+        token == "usi"    ? "shogi"
+        : token == "ucci" ? "xiangqi"
+#else
+        token == "usi"    ? "minishogi"
+        : token == "ucci" ? "minixiangqi"
+#endif
+                          : "chess");
+    Options["UCI_Variant"].set_default(defaultVariant);
+    std::istringstream ss("UCI_ShowWDL true");
+    setoption(ss);
+    ss.clear();
+    ss = std::istringstream("EvalFile xiangqi-c07e94a5c7cb.nnue");
+    setoption(ss);
+
+    std::deque<std::string> moves;
+    std::string fen;
+
+    // "moves" 之前的 token 组成 FEN；其后的全部 token 都是按 ply 顺序排列的走法。
+    while (is >> token) {
+        // std::cout << "token: " << token << std::endl;
+        if (token == "moves") {
+            while (is >> token) {
+                moves.push_back(token);
+            }
+        } else {
+            fen += token + " ";
+        }
+    }
+
+    // FEN 中的 "w" 表示红方（先手）走；据此确定走法序列中哪一侧属于人类。
+    bool first_red = true;
+    auto iter = fen.find('w');
+    if (iter == std::string::npos) {
+        first_red = false;
+    }
+    std::cout << "fen: " << fen << "first " << (first_red ? "red" : "black") << std::endl;
+
+    // moves[0] 属于 FEN 指定的行棋方：人类先走时从下标 0 开始，否则从下标 1 开始。
+    int start_pos = (human_play_red == first_red ? 0 : 1);
+
+    auto setcmd = [](const std::string &cmd) {
+        istringstream iss(cmd);
+        setoption(iss);
+    };
+    // 临时扩大 MultiPV，以便候选中尽可能包含所有合法着及人类的实走；结束后恢复原设置。
+    const int oldMultipv = int(Options["MultiPV"]);
+    setcmd("MultiPV 200");
+
+    for (std::size_t index = start_pos; index < moves.size(); index += 2) {
+        // 每次均从初始 FEN 重建局面，再回放实走之前的所有 ply，得到本次待评估的局面。
+        states = StateListPtr(new std::deque<StateInfo>(1));
+        pos.set(variants.find(Options["UCI_Variant"])->second, fen, Options["UCI_Chess960"],
+                &states->back(), Threads.main(), false);
+        std::size_t i = 0;
+        for (; i < index; ++i) {
+            states->emplace_back();
+            pos.do_move(UCI::to_move(pos, moves[i]), states->back());
+        }
+        // 防御性检查：确保 index 对应的待评估实走仍存在。
+        if (i >= moves.size())
+            break;
+        // sync_cout << pos << sync_endl;
+        std::istringstream gois("go depth 10");
+
+        // 1) 用强裁判在当前局面做 MultiPV 搜索。
+        // rootMoves 会按裁判认为的着法质量从好到坏排序，因此可以直接得到：
+        //   - best_move / best_cp / best_win_rate
+        //   - oracle_candidates 全候选列表
+        //   - played_rank / topN_hit / num_better_moves
+        // 注意：MultiPV 上限设为 200，象棋常见局面通常足够覆盖全部合法着；
+        // 如果未来遇到候选被截断，可以通过 candidate_count 和合法着数对比发现。
+        go(pos, gois, states);
+        Threads.main()->wait_for_search_finished();
+        auto bestThread = Threads.get_best_thread();
+        const Search::RootMoves rootMoves = bestThread->rootMoves;
+        if (rootMoves.empty() || rootMoves[0].pv.empty())
+            continue;
+
+        const std::string best_move = UCI::move(pos, rootMoves[0].pv[0]);
+        const Value bestValue = rootMoves[0].score;
+        std::tuple<int, int, int> bestWv;
+        UCI::wdl(bestValue, pos.game_ply(), bestWv);
+        const int bestWin = std::get<0>(bestWv);
+        const double bestCp = UCI::value_cp(bestValue);
+
+        MoveRecord2 rec;
+        // human_index 从 1 开始计数；ply_index 保留整盘走法序列中的 1 起始位置。
+        rec.human_index = int((index - start_pos) / 2 + 1);
+        rec.ply_index = int(index + 1);
+        rec.fen_before = pos.fen();
+        rec.move = moves[index];
+        rec.best_move = best_move;
+        rec.best_cp = bestCp;
+        rec.best_win_rate = bestWin / 10.0;
+        fill_oracle_candidate_features(rec, pos, rootMoves);
+
+        // 在 MultiPV 结果中定位实走。找不到时保留对应 optional 字段为空，
+        // 表示候选列表可能被 MultiPV 上限截断或该走法无法转换。
+        double playedCp = 0.0;
+        int playedWin = 0;
+        bool playedFound = false;
+
+        // 2) MultiPV 200 覆盖当前局面合法着，实走应当在候选中。
+        // 直接从候选取实走分数，避免再次 searchmoves 引入额外耗时和缓存扰动。
+        for (const auto &rm : rootMoves) {
+            if (rm.pv.empty())
+                continue;
+            if (UCI::move(pos, rm.pv[0]) != moves[index])
+                continue;
+
+            std::tuple<int, int, int> playedWv;
+            UCI::wdl(rm.score, pos.game_ply(), playedWv);
+            playedWin = std::get<0>(playedWv);
+            playedCp = UCI::value_cp(rm.score);
+            playedFound = true;
+            break;
+        }
+
+        if (playedFound) {
+            rec.played_cp = playedCp;
+            rec.played_win_rate = playedWin / 10.0;
+            rec.loss = std::max(0.0, (bestWin - playedWin) / 10.0);
+        }
+
+        records.push_back(rec);
+    }
+
+    // 不将临时搜索配置泄漏给后续 UCI 命令。
+    setcmd("MultiPV " + std::to_string(oldMultipv));
+
+    // 以单条协议输出返回全部回合的分析记录，供调用端解析。
+    nlohmann::json recs = nlohmann::json::array();
+    for (const auto &r : records)
+        recs.push_back(move_record_to_json(r));
+    nlohmann::json j;
+    j["records"] = std::move(recs);
+    sync_cout << "estimate2result " << j.dump() << sync_endl;
+}
+
 void multipv(Position &pos, istringstream &is, StateListPtr &states,
              const std::vector<Move> &banmoves = {})
 {
@@ -591,6 +986,19 @@ void UCI::loop(int argc, char *argv[])
                     is.seekg(posBeforeColor);
             }
             estimate(is, humanRed);
+        } else if (token == "estimate2") {
+            bool humanRed = true;
+            std::streampos posBeforeColor = is.tellg();
+            std::string colorToken;
+            if (is >> colorToken) {
+                if (colorToken == "red")
+                    humanRed = true;
+                else if (colorToken == "black")
+                    humanRed = false;
+                else
+                    is.seekg(posBeforeColor);
+            }
+            estimate2(is, humanRed);
         } else if (token == "position")
             position(pos, is, states), banmoves.clear();
         else if (token == "ucinewgame" || token == "usinewgame" || token == "uccinewgame")
