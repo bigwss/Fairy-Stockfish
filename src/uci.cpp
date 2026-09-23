@@ -464,6 +464,26 @@ void go(Position &pos, istringstream &is, StateListPtr &states,
     Threads.start_thinking(pos, states, limits, ponderMode);
 }
 
+// 解析 estimate/estimate2 的公共前缀：可选的人类执棋颜色和必填搜索深度。
+// 命令格式：estimate[2] [red|black] depth <positive-integer> <FEN> moves <moves...>
+static bool parse_estimate_options(istringstream &is, bool &human_play_red, int &search_depth)
+{
+    string token;
+    if (!(is >> token))
+        return false;
+
+    if (token == "red" || token == "black") {
+        human_play_red = token == "red";
+        if (!(is >> token))
+            return false;
+    }
+
+    if (token != "depth" || !(is >> search_depth) || search_depth <= 0)
+        return false;
+
+    return true;
+}
+
 /**
  * @brief
  * @note 评估人走棋的胜率损失，使用AI的最优走法作为最优走法，计算最优走法和is中人的实际走法胜率差
@@ -471,9 +491,10 @@ void go(Position &pos, istringstream &is, StateListPtr &states,
  * example: rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w moves b2e2 b9c7 c3c4
  * a9b9 g3g4 b7a7 b0c2 g6g5 g4g5 b9b5 g5g6 g9e7 h2f2 h9f8
  * @param  human_play_red true 人走的红方 false： 人走的黑方
+ * @param  search_depth 外部指定的搜索深度
  * @retval None
  */
-void estimate(std::istringstream &is, bool human_play_red)
+void estimate(std::istringstream &is, bool human_play_red, int search_depth)
 {
     // 将分析结果保存在这个records中
     std::vector<MoveRecord> records;
@@ -499,9 +520,7 @@ void estimate(std::istringstream &is, bool human_play_red)
     Options["UCI_Variant"].set_default(defaultVariant);
     std::istringstream ss("UCI_ShowWDL true");
     setoption(ss);
-    ss.clear();
-    ss = std::istringstream("EvalFile xiangqi-c07e94a5c7cb.nnue");
-    setoption(ss);
+    // 使用调用方通过 "setoption EvalFile ..." 预先配置的模型。
 
     std::deque<std::string> moves;
     std::string fen;
@@ -540,7 +559,7 @@ void estimate(std::istringstream &is, bool human_play_red)
         if (i >= moves.size())
             break;
         sync_cout << pos << sync_endl;
-        std::istringstream gois("go depth 14");
+        std::istringstream gois("go depth " + std::to_string(search_depth));
         // 最优走法
         go(pos, gois, states);
         Threads.main()->wait_for_search_finished();
@@ -556,8 +575,9 @@ void estimate(std::istringstream &is, bool human_play_red)
         int playedWin(bestWin);
         // 走法不是最优
         if (best_move != moves[index]) {
-            // go depth 10 searchmoves xx 设置实际走法
-            std::string playedCmd = "go depth 14 searchmoves " + moves[index];
+            // 对实走使用与最优着相同的搜索深度，保证两者评分可比。
+            std::string playedCmd =
+                "go depth " + std::to_string(search_depth) + " searchmoves " + moves[index];
             std::istringstream playedIs(playedCmd);
             go(pos, playedIs, states);
             Threads.main()->wait_for_search_finished();
@@ -609,7 +629,7 @@ void estimate(std::istringstream &is, bool human_play_red)
 #endif
 }
 
-void estimate2(std::istringstream &is, bool human_play_red)
+void estimate2(std::istringstream &is, bool human_play_red, int search_depth)
 {
     // 解析形如 "<FEN> moves <move1> <move2> ..." 的输入，逐回合评估人类一方的实走。
     // 与 estimate() 不同：本函数通过一次 MultiPV 搜索同时获得最优着和实走的评分。
@@ -637,9 +657,7 @@ void estimate2(std::istringstream &is, bool human_play_red)
     Options["UCI_Variant"].set_default(defaultVariant);
     std::istringstream ss("UCI_ShowWDL true");
     setoption(ss);
-    ss.clear();
-    ss = std::istringstream("EvalFile xiangqi-c07e94a5c7cb.nnue");
-    setoption(ss);
+    // 使用调用方通过 "setoption EvalFile ..." 预先配置的模型。
 
     std::deque<std::string> moves;
     std::string fen;
@@ -689,7 +707,7 @@ void estimate2(std::istringstream &is, bool human_play_red)
         if (i >= moves.size())
             break;
         // sync_cout << pos << sync_endl;
-        std::istringstream gois("go depth 10");
+        std::istringstream gois("go depth " + std::to_string(search_depth));
 
         // 1) 用强裁判在当前局面做 MultiPV 搜索。
         // rootMoves 会按裁判认为的着法质量从好到坏排序，因此可以直接得到：
@@ -766,6 +784,17 @@ void estimate2(std::istringstream &is, bool human_play_red)
     sync_cout << "estimate2result " << j.dump() << sync_endl;
 }
 
+// multipv 不要设置时间参数：movetime
+// 在时间参数设置情况下，可能会导致MultiPV 循环只完成了一部分，比如在depth=10时候：
+// completedDepth 不会更新为 10，而保留在上一个完整迭代深度（通常是 9）。前面已完成的 PV
+// 可能确实是 depth 10；尚未完成的部分不是可靠的 depth-10 结果，整体排序也不能    视为完整的
+// top-200
+// 尤其这里的自定义 multimoves 最终输出有一个实现问题：它直接读取
+// rootMoves[pvIndex].score，没有像普通 info multipv 输出那样，对未更新条目回退使用
+// previousScore。因此结果 B 中后半段可能出现:
+// 1. 分数/PV 实际来自旧深度，或是搜索中间状态；
+// 2. 某些根着被置为 -VALUE_INFINITE，最终输出可能是不合理分数
+// 3. 输出本身不携带 depth 或“完整性”标记，调用方无法只凭 multimoves 判断它是否为完整 depth 10
 void multipv(Position &pos, istringstream &is, StateListPtr &states,
              const std::vector<Move> &banmoves = {})
 {
@@ -975,30 +1004,20 @@ void UCI::loop(int argc, char *argv[])
             multipv(pos, is, states, banmoves);
         else if (token == "estimate") {
             bool humanRed = true;
-            std::streampos posBeforeColor = is.tellg();
-            std::string colorToken;
-            if (is >> colorToken) {
-                if (colorToken == "red")
-                    humanRed = true;
-                else if (colorToken == "black")
-                    humanRed = false;
-                else
-                    is.seekg(posBeforeColor);
-            }
-            estimate(is, humanRed);
+            int searchDepth = 0;
+            if (!parse_estimate_options(is, humanRed, searchDepth))
+                sync_cout << "info string usage: estimate [red|black] depth <positive-integer> "
+                          << "<FEN> moves <moves...>" << sync_endl;
+            else
+                estimate(is, humanRed, searchDepth);
         } else if (token == "estimate2") {
             bool humanRed = true;
-            std::streampos posBeforeColor = is.tellg();
-            std::string colorToken;
-            if (is >> colorToken) {
-                if (colorToken == "red")
-                    humanRed = true;
-                else if (colorToken == "black")
-                    humanRed = false;
-                else
-                    is.seekg(posBeforeColor);
-            }
-            estimate2(is, humanRed);
+            int searchDepth = 0;
+            if (!parse_estimate_options(is, humanRed, searchDepth))
+                sync_cout << "info string usage: estimate2 [red|black] depth <positive-integer> "
+                          << "<FEN> moves <moves...>" << sync_endl;
+            else
+                estimate2(is, humanRed, searchDepth);
         } else if (token == "position")
             position(pos, is, states), banmoves.clear();
         else if (token == "ucinewgame" || token == "usinewgame" || token == "uccinewgame")
