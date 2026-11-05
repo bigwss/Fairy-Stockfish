@@ -539,7 +539,8 @@ ifeq ($(optimize),yes)
 	endif
 
 	ifeq ($(comp),clang)
-		CXXFLAGS += -fexperimental-new-pass-manager
+		# Newer Clang releases use the new pass manager by default and reject this flag.
+		CXXFLAGS += $(shell printf '' | $(CXX) -x c++ -E - -fexperimental-new-pass-manager >/dev/null 2>&1 && echo -fexperimental-new-pass-manager)
 	endif
 endif
 
