@@ -312,15 +312,23 @@ void MainThread::search()
         std::ostringstream oss;
         for (size_t pvIndex = 0; pvIndex < multiPV; ++pvIndex) {
             oss << " | ";
-            Value v = bestThread->rootMoves[pvIndex].score;
+            const RootMove& rm = bestThread->rootMoves[pvIndex];
+
+            // A timed-out MultiPV iteration can leave later root moves with
+            // their score reset to -VALUE_INFINITE.  Keep reporting their
+            // most recently completed-iteration score, as UCI::pv() does.
+            Value v = rm.score != -VALUE_INFINITE ? rm.score : rm.previousScore;
+            if (v == -VALUE_INFINITE)
+                v = VALUE_ZERO;
+
             std::string wdlstr = UCI::wdl(v, rootPos.game_ply());
-            std::string action = UCI::move(rootPos, bestThread->rootMoves[pvIndex].pv[0]);
+            std::string action = UCI::move(rootPos, rm.pv[0]);
             oss << action;
-            oss << " score " << UCI::value(bestThread->rootMoves[pvIndex].score);
+            oss << " score " << UCI::value(v);
             oss << wdlstr;
             oss << " pv";
-            for (std::size_t i = 0; i < bestThread->rootMoves[pvIndex].pv.size(); ++i) {
-                oss << " " << UCI::move(rootPos, bestThread->rootMoves[pvIndex].pv[i]);
+            for (Move m : rm.pv) {
+                oss << " " << UCI::move(rootPos, m);
             }
         }
         std::cout << oss.str() << sync_endl;
