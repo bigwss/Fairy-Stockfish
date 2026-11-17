@@ -784,18 +784,20 @@ void estimate2(std::istringstream &is, bool human_play_red, int search_depth)
     sync_cout << "estimate2result " << j.dump() << sync_endl;
 }
 
+// 命令示例：multipv max_pv_size 5 depth 10；省略 max_pv_size 时默认 200。
+// max_pv_size 的范围与 MultiPV 一致，为 1 到 500，需放在 searchmoves 之前。
 // multipv 不要设置时间参数：movetime
 // 在时间参数设置情况下，可能会导致MultiPV 循环只完成了一部分，比如在depth=10时候：
 // completedDepth 不会更新为 10，而保留在上一个完整迭代深度（通常是 9）。前面已完成的 PV
 // 可能确实是 depth 10；尚未完成的部分不是可靠的 depth-10 结果，整体排序也不能    视为完整的
-// top-200
+// top-N（N 为 max_pv_size）
 // 尤其这里的自定义 multimoves 最终输出有一个实现问题：它直接读取
 // rootMoves[pvIndex].score，没有像普通 info multipv 输出那样，对未更新条目回退使用
 // previousScore。因此结果 B 中后半段可能出现:
 // 1. 分数/PV 实际来自旧深度，或是搜索中间状态；
 // 2. 某些根着被置为 -VALUE_INFINITE，最终输出可能是不合理分数
 // 3. 输出本身不携带 depth 或“完整性”标记，调用方无法只凭 multimoves 判断它是否为完整 depth 10
-void multipv(Position &pos, istringstream &is, StateListPtr &states,
+void multipv(Position &pos, istringstream &is, StateListPtr &states, int max_pv_size,
              const std::vector<Move> &banmoves = {})
 {
     auto setcmd = [](const std::string &cmd) {
@@ -804,12 +806,11 @@ void multipv(Position &pos, istringstream &is, StateListPtr &states,
     };
     static constexpr const char *set_multicout_on = "MultiMoves true";
     static constexpr const char *set_multicout_off = "MultiMoves ";
-    static constexpr const char *set_multipv_on = "MultiPV 200";
     static constexpr const char *set_multipv_off = "MultiPV ";
     int oldMultipv = int(Options["MultiPV"]);
     std::string oldMulticout = std::string(Options["MultiMoves"]);
     setcmd(set_multicout_on);
-    setcmd(set_multipv_on);
+    setcmd("MultiPV " + std::to_string(max_pv_size));
     go(pos, is, states, banmoves);
     Threads.main()->wait_for_search_finished();
     setcmd(set_multicout_off + oldMulticout);
@@ -1000,9 +1001,36 @@ void UCI::loop(int argc, char *argv[])
                 banmoves.push_back(UCI::to_move(pos, token));
         else if (token == "go")
             go(pos, is, states, banmoves);
-        else if (token == "multipv")
-            multipv(pos, is, states, banmoves);
-        else if (token == "estimate") {
+        else if (token == "multipv") {
+            int max_pv_size = 200;
+            ostringstream search_args;
+            bool valid = true;
+            while (is >> token) {
+                if (token == "max_pv_size") {
+                    string value;
+                    is >> value;
+                    istringstream value_stream(value);
+                    if (!(value_stream >> max_pv_size) || !value_stream.eof() ||
+                        max_pv_size < 1 || max_pv_size > 500) {
+                        valid = false;
+                        break;
+                    }
+                } else {
+                    search_args << token << ' ';
+                    if (token == "searchmoves") {
+                        search_args << is.rdbuf();
+                        break;
+                    }
+                }
+            }
+            if (!valid)
+                sync_cout << "info string usage: multipv [max_pv_size <1-500>] depth <N>"
+                          << sync_endl;
+            else {
+                istringstream search_is(search_args.str());
+                multipv(pos, search_is, states, max_pv_size, banmoves);
+            }
+        } else if (token == "estimate") {
             bool humanRed = true;
             int searchDepth = 0;
             if (!parse_estimate_options(is, humanRed, searchDepth))
